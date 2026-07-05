@@ -2406,7 +2406,17 @@ fn _output_html_computer_by_mitre_attck(html_output_stock: &mut Nested<String>) 
             sorted_output_map
                 .value()
                 .iter()
-                .map(|(tactic, unique, total)| format!("{} ({} &#124; {})", tactic, unique, total))
+                .map(|(tactic, unique, total)| {
+                    // Escape the tactic display name the same way the computer key is escaped, so a
+                    // customized mitre_tactics.txt with Markdown/HTML metacharacters cannot break
+                    // the table. No-op for the shipped tactic names.
+                    format!(
+                        "{} ({} &#124; {})",
+                        html_escape_value(tactic),
+                        unique,
+                        total
+                    )
+                })
                 .join("<br>")
         ));
     }
