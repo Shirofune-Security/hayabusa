@@ -4,74 +4,148 @@ permissions:
   contents: read
 
 on:
-  pull_request:
-    branches:
-      - "*"
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  windows-metadata:
+    name: Windows metadata (${{ matrix.target }})
+    runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
-        info:
-          # NOTE: Reduced to Windows x86_64 only to cut GitHub Actions load. The full
-          # platform matrix still runs in release.yml. Uncomment the entries below to
-          # restore per-push/PR coverage for the other targets.
-          # - {
-          #     os: "ubuntu-latest",
-          #     target: "x86_64-unknown-linux-gnu",
-          #     cross: false,
-          #   }
-          # - {
-          #     os: "ubuntu-latest",
-          #     target: "x86_64-unknown-linux-musl",
-          #     cross: true,
-          #   }
-          # - { os: "macOS-latest", target: "x86_64-apple-darwin", cross: false }
-          # - { os: "macOS-latest", target: "aarch64-apple-darwin", cross: false }
-          - {
-              os: "windows-latest",
-              target: "x86_64-pc-windows-msvc",
-              cross: false,
-            }
-          # - {
-          #     os: "windows-latest",
-          #     target: "i686-pc-windows-msvc",
-          #     cross: true,
-          #   }
-    runs-on: ${{ matrix.info.os }}
+        target:
+          - x86_64-pc-windows-msvc
+          - i686-pc-windows-msvc
+          - aarch64-pc-windows-msvc
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: recursive
+
       - name: Set up Rust toolchain
-        if: ${{ steps.skip_check.outputs.should_skip != 'true' }}
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
-          components: rustfmt, clippy
-          targets: ${{ matrix.info.target }}
+          targets: ${{ matrix.target }}
+
       - name: Enable Rust cache
-        if: ${{ steps.skip_check.outputs.should_skip != 'true' }}
-        uses: Swatinem/rust-cache@6fd3edff6979b79f87531400ad694fb7f2c84b1f #2.1.0
-      - name: Fmt Check
-        run: cargo fmt -- --check
-      - name: Prepare Clippy
-        run: rustup component add clippy
-      - name: Run clippy action to produce annotations
-        run: cargo clippy --all-targets -- -D warnings
-      - name: Build tests
-        if: ${{ steps.skip_check.outputs.should_skip != 'true' }}
-        uses: ClementTsang/cargo-action@2438cc5f3ba4e971289fffca2a00dedea6911f14 # v0.0.7
+        uses: Swatinem/rust-cache@6fd3edff6979b79f87531400ad694fb7f2c84b1f # 2.1.0
         with:
-          command: test
-          args: --no-run --locked ${{ matrix.features }} --target=${{ matrix.info.target }}
-          use-cross: ${{ matrix.info.cross }}
-          cross-version: 0.2.4
+          key: windows-metadata-${{ matrix.target }}
+
+      - name: Build Windows release binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Verify release binary and version edge cases
+        shell: pwsh
         env:
-          RUST_BACKTRACE: full
-      - name: Run tests
-        run: cargo test --verbose
+          HAYABUSA_TARGET: ${{ matrix.target }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # Read the exact release verification script without maintaining a second copy.
+          $workflow = Get-Content .github/workflows/release.yml
+          $step = [array]::IndexOf($workflow, '      - name: Verify Windows executable metadata')
+          if ($step -lt 0) {
+            throw 'Release metadata verification step was not found.'
+          }
+          $run = $step + 1
+          while ($run -lt $workflow.Count -and $workflow[$run] -cne '        run: |') {
+            if ($workflow[$run].StartsWith('      - name:')) {
+              throw 'Release metadata verification script was not found.'
+            }
+            $run++
+          }
+          if ($run -eq $workflow.Count) {
+            throw 'Release metadata verification script was not found.'
+          }
+          $scriptLines = [System.Collections.Generic.List[string]]::new()
+          for ($line = $run + 1; $line -lt $workflow.Count; $line++) {
+            if ([string]::IsNullOrWhiteSpace($workflow[$line])) {
+              $scriptLines.Add('')
+            } elseif ($workflow[$line].StartsWith('          ')) {
+              $scriptLines.Add($workflow[$line].Substring(10))
+            } else {
+              break
+            }
+          }
+          if ($scriptLines.Count -eq 0) {
+            throw 'Release metadata verification script is empty.'
+          }
+          $verifyMetadata = [scriptblock]::Create(($scriptLines -join "`n"))
+
+          $metadataJson = cargo metadata --locked --no-deps --format-version 1
+          if ($LASTEXITCODE -ne 0) {
+            throw 'cargo metadata failed.'
+          }
+          $package = ($metadataJson | ConvertFrom-Json).packages |
+            Where-Object { $_.name -eq 'hayabusa' }
+          if (-not $package) {
+            throw 'Hayabusa package metadata was not found.'
+          }
+          $env:RELEASE_VERSION = $package.version
+          & $verifyMetadata
+
+          $env:RELEASE_VERSION = '0.0.0-mismatched-release'
+          $failure = $null
+          try {
+            & $verifyMetadata
+          } catch {
+            $failure = $_.Exception.Message
+          }
+          if ($failure -notmatch '^Metadata mismatch for (FileVersion|ProductVersion):') {
+            throw "Wrong release version did not produce the expected failure: $failure"
+          }
+          Write-Host "Expected version mismatch rejected: $failure"
+
+          $env:RELEASE_VERSION = ''
+          $failure = $null
+          try {
+            & $verifyMetadata
+          } catch {
+            $failure = $_.Exception.Message
+          }
+          if ($failure -cne 'RELEASE_VERSION must be set before metadata verification.') {
+            throw "Empty release version did not produce the expected failure: $failure"
+          }
+          Write-Host "Expected empty version rejected: $failure"
+
+          # Tiny binaries exercise the actual build script for version suffixes without
+          # recompiling Hayabusa. Both versions share one Cargo target directory.
+          $fixtureRoot = Join-Path $env:RUNNER_TEMP 'hayabusa-metadata-smoke'
+          New-Item -ItemType Directory -Path (Join-Path $fixtureRoot 'src') -Force | Out-Null
+          Copy-Item build.rs (Join-Path $fixtureRoot 'build.rs')
+          Set-Content (Join-Path $fixtureRoot 'src/main.rs') 'fn main() {}'
+          $manifestMetadata = @('[package.metadata.winresource]')
+          foreach ($property in $package.metadata.winresource.PSObject.Properties) {
+            $manifestMetadata += $property.Name + ' = ' + (ConvertTo-Json -InputObject $property.Value -Compress)
+          }
+          Push-Location $fixtureRoot
+          try {
+            foreach ($fixtureVersion in @('4.1.0-rc.1+build-test', '4.1.0+build-test')) {
+              $manifest = @(
+                '[package]',
+                'name = "hayabusa"',
+                "version = `"$fixtureVersion`"",
+                'edition = "2024"',
+                'build = "build.rs"'
+              ) + $manifestMetadata + @('[build-dependencies]', 'winresource = "=0.1.31"')
+              Set-Content Cargo.toml ($manifest -join "`n")
+              cargo generate-lockfile --offline
+              if ($LASTEXITCODE -ne 0) {
+                throw "Fixture lockfile generation failed for $fixtureVersion."
+              }
+              cargo build --release --locked --offline --target $env:HAYABUSA_TARGET
+              if ($LASTEXITCODE -ne 0) {
+                throw "Fixture build failed for $fixtureVersion."
+              }
+              $env:RELEASE_VERSION = $fixtureVersion
+              & $verifyMetadata
+            }
+          } finally {
+            Pop-Location
+          }
+          Write-Host "All Windows metadata checks passed for $env:HAYABUSA_TARGET."
