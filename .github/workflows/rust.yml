@@ -1,77 +1,171 @@
-name: Rust
+name: Release artifact cleanup smoke
 
 permissions:
   contents: read
 
 on:
-  pull_request:
-    branches:
-      - "*"
-
-env:
-  CARGO_TERM_COLOR: always
+  workflow_dispatch:
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        info:
-          # NOTE: Reduced to Windows x86_64 only to cut GitHub Actions load. The full
-          # platform matrix still runs in release.yml. Uncomment the entries below to
-          # restore per-push/PR coverage for the other targets.
-          # - {
-          #     os: "ubuntu-latest",
-          #     target: "x86_64-unknown-linux-gnu",
-          #     cross: false,
-          #   }
-          # - {
-          #     os: "ubuntu-latest",
-          #     target: "x86_64-unknown-linux-musl",
-          #     cross: true,
-          #   }
-          # - { os: "macOS-latest", target: "x86_64-apple-darwin", cross: false }
-          # - { os: "macOS-latest", target: "aarch64-apple-darwin", cross: false }
-          - {
-              os: "windows-latest",
-              target: "x86_64-pc-windows-msvc",
-              cross: false,
-            }
-          # - {
-          #     os: "windows-latest",
-          #     target: "i686-pc-windows-msvc",
-          #     cross: true,
-          #   }
-    runs-on: ${{ matrix.info.os }}
+  fixture:
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-id: ${{ steps.bundle.outputs.artifact-id }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - name: Run unit tests and create disposable package fixtures
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         with:
-          submodules: recursive
-      - name: Set up Rust toolchain
-        if: ${{ steps.skip_check.outputs.should_skip != 'true' }}
-        uses: dtolnay/rust-toolchain@stable
+          script: |
+            await exec.exec(process.execPath, ['--test', '.github/scripts/cleanup-release-artifacts.test.cjs']);
+            const fs = require('node:fs');
+            fs.mkdirSync('fixture-payload', {recursive: true});
+            fs.writeFileSync('fixture-payload/payload.txt', 'Disposable cleanup test data, not a Hayabusa release.\n');
+      - name: Create all-packages fixture containing every platform ZIP
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_DEFLATED
+          destination = Path('fixture-zips')
+          destination.mkdir()
+          for suffix in ["win-x64","win-x86","win-aarch64","lin-x64-gnu","lin-x64-musl","lin-aarch64-gnu","lin-aarch64-musl","mac-x64","mac-aarch64","win-x64-live-response","win-x86-live-response","win-aarch64-live-response","all-platforms"]:
+              with ZipFile(destination / f'hayabusa-0.0.0-cleanup-smoke-{suffix}.zip', 'w', ZIP_DEFLATED) as archive:
+                  archive.write('fixture-payload/payload.txt', 'payload.txt')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          toolchain: stable
-          components: rustfmt, clippy
-          targets: ${{ matrix.info.target }}
-      - name: Enable Rust cache
-        if: ${{ steps.skip_check.outputs.should_skip != 'true' }}
-        uses: Swatinem/rust-cache@6fd3edff6979b79f87531400ad694fb7f2c84b1f #2.1.0
-      - name: Fmt Check
-        run: cargo fmt -- --check
-      - name: Prepare Clippy
-        run: rustup component add clippy
-      - name: Run clippy action to produce annotations
-        run: cargo clippy --all-targets -- -D warnings
-      - name: Build tests
-        if: ${{ steps.skip_check.outputs.should_skip != 'true' }}
-        uses: ClementTsang/cargo-action@2438cc5f3ba4e971289fffca2a00dedea6911f14 # v0.0.7
+          name: hayabusa-0.0.0-cleanup-smoke-win-x64
+          path: fixture-payload/payload.txt
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          command: test
-          args: --no-run --locked ${{ matrix.features }} --target=${{ matrix.info.target }}
-          use-cross: ${{ matrix.info.cross }}
-          cross-version: 0.2.4
+          name: hayabusa-0.0.0-cleanup-smoke-win-x86
+          path: fixture-payload/payload.txt
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: hayabusa-0.0.0-cleanup-smoke-win-aarch64
+          path: fixture-payload/payload.txt
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: hayabusa-0.0.0-cleanup-smoke-lin-x64-gnu
+          path: fixture-payload/payload.txt
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: hayabusa-0.0.0-cleanup-smoke-lin-x64-musl
+          path: fixture-payload/payload.txt
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: hayabusa-0.0.0-cleanup-smoke-lin-aarch64-gnu
+          path: fixture-payload/payload.txt
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: hayabusa-0.0.0-cleanup-smoke-lin-aarch64-musl
+          path: fixture-payload/payload.txt
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: hayabusa-0.0.0-cleanup-smoke-mac-x64
+          path: fixture-payload/payload.txt
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: hayabusa-0.0.0-cleanup-smoke-mac-aarch64
+          path: fixture-payload/payload.txt
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: hayabusa-0.0.0-cleanup-smoke-win-x64-live-response
+          path: fixture-payload/payload.txt
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: hayabusa-0.0.0-cleanup-smoke-win-x86-live-response
+          path: fixture-payload/payload.txt
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: hayabusa-0.0.0-cleanup-smoke-win-aarch64-live-response
+          path: fixture-payload/payload.txt
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: hayabusa-0.0.0-cleanup-smoke-all-platforms
+          path: fixture-payload/payload.txt
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        id: bundle
+        with:
+          name: all-packages
+          path: fixture-zips/*.zip
+          if-no-files-found: error
+          retention-days: 1
+
+  cleanup:
+    needs: fixture
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Exercise cleanup and deliberately interrupt the first attempt
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         env:
-          RUST_BACKTRACE: full
-      - name: Run tests
-        run: cargo test --verbose
+          FINAL_ARTIFACT_ID: ${{ needs.fixture.outputs.artifact-id }}
+        with:
+          script: |
+            const cleanup = require('./.github/scripts/cleanup-release-artifacts.cjs');
+            const originalDelete = github.rest.actions.deleteArtifact.bind(github.rest.actions);
+            let deleted = 0;
+            github.rest.actions.deleteArtifact = async (parameters) => {
+              if (Number(process.env.GITHUB_RUN_ATTEMPT) === 1 && deleted === 1) {
+                throw new Error('Intentional fixture-only failure after one deletion; rerun failed jobs to verify recovery.');
+              }
+              const response = await originalDelete(parameters);
+              deleted++;
+              return response;
+            };
+            await cleanup({github, context, core, finalArtifactId: process.env.FINAL_ARTIFACT_ID, releaseVersion: '0.0.0-cleanup-smoke'});
+            const remaining = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {...context.repo, run_id: context.runId, per_page: 100});
+            if (remaining.length !== 1 || remaining[0].name !== 'all-packages' || remaining[0].id !== Number(process.env.FINAL_ARTIFACT_ID)) {
+              throw new Error('Cleanup did not preserve exactly the original all-packages artifact.');
+            }
+            core.info('Only the original all-packages artifact remains after cleanup.');
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: all-packages
+          path: verified-bundle
+      - name: Verify all individual ZIPs remain in the final bundle
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+          paths = sorted(Path('verified-bundle').glob('*.zip'))
+          expected = {f'hayabusa-0.0.0-cleanup-smoke-{suffix}.zip' for suffix in ["win-x64","win-x86","win-aarch64","lin-x64-gnu","lin-x64-musl","lin-aarch64-gnu","lin-aarch64-musl","mac-x64","mac-aarch64","win-x64-live-response","win-x86-live-response","win-aarch64-live-response","all-platforms"]}
+          assert {path.name for path in paths} == expected
+          for path in paths:
+              with ZipFile(path) as archive:
+                  assert archive.namelist() == ['payload.txt']
+                  assert archive.read('payload.txt') == b'Disposable cleanup test data, not a Hayabusa release.\n'
+          print('Verified all 13 individual package ZIPs remain inside the only downloadable artifact.')
+          PY
