@@ -1,5 +1,11 @@
 # Changes
 
+## Unreleased
+
+**Other:**
+
+- Release automation now retains only the final `all-packages` artifact after a successful run. Individual platform and live-response ZIPs remain inside that bundle; intermediate artifacts are removed only after the final upload is verified. (@YamatoSecurity)
+
 ## 4.1.0 [2026/09/12] - Suzumushi Release
 
 **New Features:**

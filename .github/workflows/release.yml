@@ -297,6 +297,7 @@ jobs:
           name: ${{ steps.set_artifact_name.outputs.artifact_name }}
           path: release-binaries/*
           include-hidden-files: true
+          if-no-files-found: error
 
       - name: Set Artifact Name(encoded_rule)
         if: contains(matrix.info.os, 'windows') == true
@@ -319,6 +320,7 @@ jobs:
           name: ${{ steps.set_artifact_name_encoded_rule.outputs.artifact_name }}
           path: release-binaries-encoded-rules/*
           include-hidden-files: true
+          if-no-files-found: error
 
   upload-all-platforms:
     needs: upload
@@ -340,10 +342,13 @@ jobs:
           name: hayabusa-${{ github.event.inputs.release_ver }}-all-platforms
           path: all-packages/*
           include-hidden-files: true
+          if-no-files-found: error
 
   all-packages-zip:
     needs: upload-all-platforms
     runs-on: ubuntu-latest
+    outputs:
+      artifact-id: ${{ steps.upload_all_packages.outputs.artifact-id }}
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -359,7 +364,39 @@ jobs:
             cd ..
           done
       - name: Upload Zip Artifacts(all-packages)
+        id: upload_all_packages
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: all-packages
           path: all-packages/*.zip
+          if-no-files-found: error
+
+  # Intermediate uploads are needed to transfer packages between jobs. Remove them
+  # only after the final bundle is safely uploaded, leaving one downloadable artifact.
+  # A separate job lets failed cleanup resume without rebuilding from deleted inputs.
+  # After successful cleanup, start a new release run if packages must be rebuilt.
+  cleanup-intermediate-artifacts:
+    needs: all-packages-zip
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Checkout cleanup script
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Remove intermediate release artifacts
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        env:
+          FINAL_ARTIFACT_ID: ${{ needs.all-packages-zip.outputs.artifact-id }}
+          RELEASE_VERSION: ${{ github.event.inputs.release_ver }}
+        with:
+          script: |
+            const cleanup = require('./.github/scripts/cleanup-release-artifacts.cjs');
+            await cleanup({
+              github, context, core,
+              finalArtifactId: process.env.FINAL_ARTIFACT_ID,
+              releaseVersion: process.env.RELEASE_VERSION,
+            });
